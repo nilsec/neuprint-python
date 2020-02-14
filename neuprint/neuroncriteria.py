@@ -1,11 +1,105 @@
 import re
-import numpy as np
-
+import copy
+import inspect
+import functools
 from textwrap import indent, dedent
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+
+import numpy as np
+import pandas as pd
 
 from .utils import make_args_iterable
 from .client import inject_client
+
+def neuroncriteria_args(*argnames):
+    """
+    Returns a decorator.
+    For the given argument names, the decorator converts the
+    arguments into NeuronCriteria objects via ``copy_as_neuroncriteria()``.
+    
+    If the decorated function also accepts a 'client' argument,
+    that argument is used to initialize the NeuronCriteria.
+    """
+    def decorator(f):
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            callargs = inspect.getcallargs(f, *args, **kwargs)
+            for name in argnames:
+                callargs[name] = copy_as_neuroncriteria(callargs[name], callargs.get('client', None))
+            return f(**callargs)
+
+        wrapper.__signature__ = inspect.signature(f)
+        return wrapper
+
+    return decorator
+
+
+def copy_as_neuroncriteria(obj, client=None):
+    """
+    If the given argument is a NeuronCriteria object, copy it.
+    Otherwise, attempt to construct a NeuronCriteria object,
+    using the argument as either the bodyId or the type AND instance.
+
+    Rules:
+
+        NC -> copy(NC)
+
+        None -> NC()
+
+        int -> NC(bodyId)
+        [str,...] -> NC(bodyId)
+        DataFrame['bodyId'] -> NC(bodyId)
+        
+        str -> NC(type, instance)
+        [str, ...] -> NC(type, instance)
+
+        [] -> Error
+        [None] -> Error
+        Anything else -> Error
+        
+    """
+    if isinstance(obj, pd.DataFrame):
+        assert 'bodyId' in obj.columns, \
+            'If passing a DataFrame as NeuronCriteria, it must have "bodyId" column'
+        return NeuronCriteria(bodyId=obj['bodyId'].values, client=client)
+
+    if not isinstance(obj, Sequence) or isinstance(obj, str):
+        if obj is None:
+            return NeuronCriteria(client=client)
+        
+        if isinstance(obj, NeuronCriteria):
+            return copy.copy(obj)
+    
+        if isinstance(obj, str):
+            return NeuronCriteria(type=obj, instance=obj, client=client)
+        
+        if np.issubdtype(type(obj), np.integer):
+            return NeuronCriteria(bodyId=obj, client=client)
+
+        raise RuntimeError(f"Can't auto-construct a NeuronCriteria from {obj}.  Please explicitly create one.")
+    else:
+        if len(obj) == 0:
+            raise RuntimeError(f"Can't auto-construct a NeuronCriteria from {obj}.  Please explicitly create one.")
+    
+        if len(obj) == 1 and obj[0] is None:
+            raise RuntimeError(f"Can't auto-construct a NeuronCriteria from {obj}.  Please explicitly create one.")
+    
+        if isinstance(obj, np.ndarray) and np.issubdtype(obj.dtype, np.integer):
+            return NeuronCriteria(bodyId=obj, client=client)
+        
+        item = [*filter(lambda item: item is not None, obj)][0]
+        if np.issubdtype(type(item), np.integer):
+            return NeuronCriteria(bodyId=obj, client=client)
+    
+        if isinstance(item, str):
+            return NeuronCriteria(type=obj, instance=obj, client=client)
+    
+        raise RuntimeError(f"Can't auto-construct a NeuronCriteria from {obj}.  Please explicitly create one.")
+
+    
+    
+    
 
 class NeuronCriteria:
     """
